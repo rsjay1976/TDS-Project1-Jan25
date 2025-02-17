@@ -13,17 +13,20 @@ import os
 from datetime import datetime
 import re
 import json
+import sqlite3
 from pathlib import Path
 from typing import Dict, Any
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
 def extract_email_sender(input_path="./data/email.txt", output_path="./data/email-sender.txt"):
     # Read the email content from the file
    proxy_url="http://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
    with open(input_path, 'r', encoding='utf-8') as f:
         email_content = f.read()
-   auth_token ="eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6IjIyZjMwMDI3MjNAZHMuc3R1ZHkuaWl0bS5hYy5pbiJ9.wGu8bVE0Tod-xXNmm3PJqCXqmgWSshwNqp6Tl1kexbs"	
+   auth_token =os.environ["AIPROXY_TOKEN"]
    payload = {
         "model": "gpt-4o-mini",
         "messages": [
@@ -33,11 +36,11 @@ def extract_email_sender(input_path="./data/email.txt", output_path="./data/emai
         "max_tokens": 500,
         "temperature": 0.7
     }
-		
+
    response = requests.post(
             proxy_url,
             headers={"Content-Type": "application/json",
-                     
+
             "Authorization": f"Bearer {auth_token}"},
             data=json.dumps(payload)
         )
@@ -48,7 +51,7 @@ def extract_email_sender(input_path="./data/email.txt", output_path="./data/emai
    with open(output_path, 'w', encoding='utf-8') as f:
         f.write(email_address + '\n')
 
-   print(f"Extracted email address: {email_address}")     
+   print(f"Extracted email address: {email_address}")
    return email_address
 def create_markdown_index(docs_dir="./data/docs", output_path="./data/docs/index.json"):
     try:
@@ -157,7 +160,7 @@ def count_day_of_week(day_of_week, input_file="./data/dates.txt", output_file=".
         # Write the result to output file
         with open(output_file, 'w') as f:
             f.write(str(day_count) + '\n')
-        outputStr= "Counted"+ str(day_count) + "occurrences of"+ day_of_week +"." 
+        outputStr= "Counted"+ str(day_count) + "occurrences of"+ day_of_week +"."
         print(f"Counted {day_count} occurrences of {day_of_week}.")
         return outputStr
 
@@ -203,28 +206,51 @@ def format_mdfile(file_path="/data/format.md"):
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         print(f"Error formatting {file_path}: {e}")
 
+def calculate_sales(output_path="/data/ticket-sales-gold.txt"):
+    output_path = Path(output_path)
+    db_path = Path("/data/ticket-sales.db")
+    # Connect to the SQLite database
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # Query to calculate total sales for "Gold" ticket type
+    cursor.execute("SELECT SUM(units * price) FROM tickets WHERE type = 'Gold'")
+    result = cursor.fetchone()
+
+    # Extract the total sales value (handle NULL case)
+    total_sales = result[0] if result[0] is not None else 0
+
+    # Write the result to the output file
+    with output_path.open('w') as f:
+        f.write(str(total_sales))
+
+    # Close the database connection
+    conn.close()
+    return "sales written to "+str(output_path)
+
 def function_gpt(user_input: str, tools: list[Dict[str, Any]]) -> Dict[str, Any]:
     proxy_url="http://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
-    auth_token ="eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6IjIyZjMwMDI3MjNAZHMuc3R1ZHkuaWl0bS5hYy5pbiJ9.wGu8bVE0Tod-xXNmm3PJqCXqmgWSshwNqp6Tl1kexbs"	
+    auth_token =os.environ["AIPROXY_TOKEN"]
     payload = {
         "model": "gpt-4o-mini",
         "messages": [
             {"role": "user", "content": user_input},
-                
-        ],      
-	"tools": tools,
+
+        ],
+        "tools": tools,
     "tool_choice": "auto",
     "max_tokens": 500,
     "temperature": 0.7
     }
-	
+
     response = requests.post(
             proxy_url,
-            headers={"Content-Type": "application/json",                     
+            headers={"Content-Type": "application/json",
             "Authorization": f"Bearer {auth_token}"},
             data=json.dumps(payload)
         )
     response_json = response.json()
+    print (str(response_json))
     return response.json()["choices"][0]["message"]
 
 tools = [
@@ -271,6 +297,25 @@ tools = [
                 "required": ["day_of_week","input_file","output_file"],
                 "additionalProperties": False
             },
+            "strict": True
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calculate_sales",
+            "description": "calculate sales of provided item from sqllite db",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "output_path": {
+                        "type": "string",
+                        "description": "output  file path of sales of prompted item ticket type  having the format of data/ticket-sales-<item>.txt. Example: for gold it will be data/ticket-sales-gold.txt "
+                    }
+                },
+                "required": ["output_path"],
+                "additionalProperties": False
+                },
             "strict": True
         }
     },
@@ -349,8 +394,8 @@ tools = [
             },
             "strict": True
         }
-    } 
-        
+    }
+
 ]
 #function_gpt("The file /data/dates.txt contains a list of dates, one per line. Count the number of Wednesdays in the list, and write just the number to /data/dates-wednesdays.txt", [tools])
 # Run the function
@@ -369,7 +414,24 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"]
 )
+@app.get("/read")
+async def read_file(path: str):
+    # Check if the file exists
+    base_dir = Path("/data").resolve()
+    target_path = (base_dir / path).resolve()
 
+    # Check if the target path is within /data
+    if not target_path.is_relative_to(base_dir):
+        raise HTTPException(status_code=403, detail="Access denied: Path is outside /data directory.")
+
+    if os.path.exists(path) and os.path.isfile(path):
+        # Open the file and return its content
+        with open(path, 'r') as file:
+            content = file.read()
+        return PlainTextResponse(content=content, status_code=200)
+    else:
+        # File not found, return 404 with empty body
+        raise HTTPException(status_code=404, detail="File not found")
 @app.post("/run")
 async def run_task(task: Optional[str] = None):
     if task is None:
@@ -384,12 +446,18 @@ async def run_task(task: Optional[str] = None):
         arguments = json.loads(arguments_json)
 
     # Invoke the corresponding function dynamically
+        function_executed=False
         if function_name == 'count_day_of_week':
             print("in day of week function")
             result = count_day_of_week(**arguments)
-            print(f"Function Result: {result}")            
+            function_executed=True
+            print(f"Function Result: {result}")
         else:
-            print(f"Unknown function: {function_name}")        
+            print(f"Unknown function: {function_name}")
+
+        if function_name == 'calculate_sales':
+            result = calculate_sales(**arguments)
+            function_executed=True
         function_map = {
             "extract_email_sender": extract_email_sender,
             "create_markdown_index": create_markdown_index,
@@ -398,13 +466,14 @@ async def run_task(task: Optional[str] = None):
             "format_mdfile": format_mdfile
         }
         print ("***function name"+function_name)
-        if function_name in function_map:
+        if function_executed == False:
+           if function_name in function_map:
             result = function_map[function_name]()
-        else:
+           else:
             result = f"Function '{function_name}' not found"
         #extract_recent_log_lines()
-        
+
         return {"results": result}
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
