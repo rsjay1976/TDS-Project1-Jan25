@@ -1,16 +1,10 @@
 # Proxy setup for corporate networks (optional)
-ARG http_proxy=http://www-proxy-adcq7.us.oracle.com:80
-ARG https_proxy=http://www-proxy-adcq7.us.oracle.com:80
 
 # Base image
 FROM python:latest
 
 # Proxy build args (in case it's needed after FROM)
-ARG http_proxy
-ARG https_proxy
 
-ENV http_proxy=${http_proxy}
-ENV https_proxy=${https_proxy}
 
 # Install curl and other essentials
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
